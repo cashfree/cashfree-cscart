@@ -57,7 +57,7 @@ if (defined('PAYMENT_NOTIFICATION')) {
     $cf_request["orderNote"] = "Order# " . $order_id;
     $cf_request["orderAmount"] = fn_cf_adjust_amount($order_info['total'], $processor_data['processor_params']['currency']);
     $cf_request["orderCurrency"] = $processor_data['processor_params']['currency'];
-    $cf_request["customerPhone"] = $order_info['phone'];
+    $cf_request["customerPhone"] = preg_replace('/[^\dxX]/', '', $order_info['phone']);
     $cf_request["customerName"] = $order_info['b_firstname'] . " " . $order_info['b_lastname'];
     $cf_request["customerEmail"] = $order_info['email'];
     $cf_request["returnUrl"] = $returnUrl;
