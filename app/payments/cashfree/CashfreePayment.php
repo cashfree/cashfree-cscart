@@ -184,12 +184,13 @@ class CashfreePayment
         $hash_hmac = hash_hmac('sha256', $data, $secretKey, true);
         $computedSignature = base64_encode($hash_hmac);
 
-        if ($computedSignature != $signature) {
+        if ($computedSignature == $signature) {
+            $success = true;
+        }
+        else {
             $success = false;
         }
-
-        $success = true;
-
+        
         return $success;
 
     }
