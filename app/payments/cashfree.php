@@ -10,8 +10,8 @@ if (!defined('AREA')) {die('Access denied');}
 // Notify flow s2s
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     if ($mode == 'cf_notify') {
-        $cfNotify = new Cf_Notify();
-        $cfNotify->process();
+        $cf_notify = new Cf_Notify();
+        $cf_notify->process();
         exit;
     }
 }
@@ -28,49 +28,44 @@ if (defined('PAYMENT_NOTIFICATION')) {
         $view->assign('order_action', __('placing_order'));
         $view->display('views/orders/components/placing_order.tpl');
         fn_flush();
+        $cashfree_payment = new CashfreePayment();
 
-        $cashfreePayment = new CashfreePayment();
-
-        $cashfreePayment->postProcessing();
+        $cashfree_payment->postProcessing();
         exit;
     }
 } else {
-    $cashfreePayment = new CashfreePayment();
+    $cashfree_payment = new CashfreePayment();
 
     $session_id = Tygh::$app['session']->getID();
 
-    $returnUrl = fn_url("payment_notification.cf_return?payment=cashfree&sid=" . base64_encode($session_id), AREA, 'current');
-
-    $notifyUrl = fn_url("payment_notification.cf_notify?payment=cashfree", AREA, 'current');
+    $return_url = fn_url("payment_notification.cf_return?payment=cashfree&sid=" . base64_encode($session_id), AREA, 'current');
+    $return_url = $return_url."&order_id={order_id}";
     
-    $apiEndpoint = ($processor_data['processor_params']['enabled_test_mode'] == 1) ? 'https://test.cashfree.com/billpay' : 'https://www.cashfree.com';  	
-
-    $actionUrl = $apiEndpoint.'/checkout/post/submit';
+    $notify_url = fn_url("payment_notification.cf_notify?payment=cashfree", AREA, 'current');
     
-    $appId = $processor_data['processor_params']['app_id'];
-
-    $secretKey = $processor_data['processor_params']['secret_key'];
-
-    $cf_request = array();
-    $cf_request["appId"] = $appId;
-    $cf_request["orderId"] = $order_id;
-    $cf_request["orderNote"] = "Order# " . $order_id;
-    $cf_request["orderAmount"] = fn_cf_adjust_amount($order_info['total'], $processor_data['processor_params']['currency']);
-    $cf_request["orderCurrency"] = $processor_data['processor_params']['currency'];
-    $cf_request["customerPhone"] = preg_replace('/[^\dxX]/', '', $order_info['phone']);
-    $cf_request["customerName"] = $order_info['b_firstname'] . " " . $order_info['b_lastname'];
-    $cf_request["customerEmail"] = $order_info['email'];
-    $cf_request["returnUrl"] = $returnUrl;
-    $cf_request["notifyUrl"] = $notifyUrl;
+    $cf_request["order_id"] = $order_id;
+    $cf_request["customer_id"] = (!empty($order_info['user_id']) && $order_info['user_id'] !== 0) ? $order_info['user_id'] : 'cscart_guest_user';
+    $cf_request["order_note"] = "Order# " . $order_id;
+    $cf_request["order_amount"] = fn_cf_adjust_amount($order_info['total'], $processor_data['processor_params']['currency']);
+    $cf_request["order_currency"] = $processor_data['processor_params']['currency'];
+    $cf_request["customer_phone"] = preg_replace('/[^\dxX]/', '', $order_info['phone']);
+    $cf_request["customer_name"] = $order_info['b_firstname'] . " " . $order_info['b_lastname'];
+    $cf_request["customer_email"] = $order_info['email'];
+    $cf_request["return_url"] = $return_url;
+    $cf_request["notify_url"] = $notify_url;
     $cf_request["source"] = "cscart";
-    $cf_request["signature"] = $cashfreePayment->generateSignature($processor_data['processor_params'], $cf_request);
+    $payment_data = $cashfree_payment->getPaymentSessionData($processor_data['processor_params'], $cf_request);
 
-    if (!$cf_request['customerPhone']) {
+    if (!$cf_request['customer_phone']) {
         echo __('text_unsupported_phone');
         exit;
     }
 
-    echo $cashfreePayment->generateHtmlForm($actionUrl, $cf_request);
-
-    exit;
+    if($payment_data["STATUS"] == "SUCCESS") {
+        echo $cashfree_payment->generateHtmlForm($payment_data);
+        exit;
+    } else {
+        echo __('text_cf_failed_order');
+        exit;
+    }
 }
