@@ -4,7 +4,8 @@ class CashfreePayment
 {
     //Define version of plugin
     const VERSION = '1.0.0';
-    
+    const API_VERSION = '2022-09-01';
+    const CASHFREE_V3_JS_URL = 'https://sdk.cashfree.com/js/v3/cashfree.js';
     /**
      * Generate Signature for payment
      *
@@ -12,22 +13,158 @@ class CashfreePayment
      * @param  mixed $cf_request
      * @return void
      */
-    public function generateSignature($processor_data, $cf_request)
+    public function getPaymentSessionData($processor_data, $cf_request)
     {
-        // get secret key from your config
-        $secretKey = $processor_data['secret_key'];
-
-        ksort($cf_request);
-        $signatureData = "";
-        foreach ($cf_request as $key => $value) {
-            $signatureData .= $key . $value;
+        $config_data = $this->getCurlValue($processor_data);
+        $url = $config_data['curlUrl']."/".$cf_request['order_id'];
+        $get_order_response = $this->curlGetRequest($config_data, $processor_data, $url);
+        if($get_order_response['STATUS'] == 'SUCCESS') {
+            $cf_order = $get_order_response['cfOrder'];
+            if ($cf_order->order_status == 'PAID') {
+                return array(
+                    'STATUS' => 'ERROR'
+                );
+            } else {
+                if (
+                    strtotime( $cf_order->order_expiry_time ) > time()
+                    && round( $cf_order->order_amount ) === round( $cf_request['order_amount'] )
+                    && $cf_order->order_currency === $cf_request['order_currency']
+                ) {
+                    return array(
+                        'STATUS' => 'SUCCESS',
+                        'payment_session_id' => $cf_order->payment_session_id,
+                        'environment' => $config_data["environment"]
+                    );
+                } else {
+                    return array(
+                        'STATUS' => 'ERROR',
+                        'payment_session_id' => ""
+                    );
+                }
+            }
         }
-
-        $signature = hash_hmac('sha256', $signatureData, $secretKey, true);
-        $signature = base64_encode($signature);
-
-        return $signature;
+        return $this->curlPostRequest($config_data, $processor_data, $cf_request);
     }
+
+    // Get config values for gateway environment
+	public function getCurlValue($processor_data) {
+		$is_sandbox = $processor_data['enabled_test_mode'] === '1';
+		$base_url = $is_sandbox ? 'https://sandbox.cashfree.com' : 'https://api.cashfree.com';
+	
+		return [
+			'curlUrl' => "{$base_url}/pg/orders",
+			'environment' => $is_sandbox ? 'sandbox' : 'production'
+		];
+	}
+
+    // Post request for gateway
+	private function curlPostRequest($config_data, $processor_data, $data) {
+        $request_data = array(
+            'customer_details' => array(
+                'customer_id' =>  $data['customer_id'],
+                'customer_email' =>  $data['customer_email'],
+                'customer_phone' =>  $data['customer_phone'],
+                'customer_name' =>  $data['customer_name']
+            ),
+            'order_meta' => array(
+                'return_url' => $data['return_url'],
+                'notify_url' => $data['notify_url']
+            ),
+            'order_id' => strval($data['order_id']),
+            'order_amount' => $data['order_amount'],
+            'order_currency' => $data['order_currency'],
+            'order_note' => $data['order_note'],
+        );
+        // Headers
+		$headers = [
+			'Accept: application/json',
+			'Content-Type: application/json',
+			'x-api-version: '. self::API_VERSION,
+			'x-client-id:'. $processor_data['app_id'],
+			'x-client-secret:'. $processor_data['secret_key']
+		];
+
+		// cURL options
+        $curl_options = array(
+            CURLOPT_URL            => $config_data['curlUrl'],
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => json_encode($request_data),
+            CURLOPT_HTTPHEADER     => $headers,
+            CURLOPT_TIMEOUT        => 45,
+            CURLOPT_RETURNTRANSFER => true,
+        );
+
+        // Initialize cURL session
+        $curl = curl_init();
+
+        // Set cURL options
+        curl_setopt_array($curl, $curl_options);
+
+        // Execute cURL session and get the response
+        $response = curl_exec($curl);
+
+        // Get HTTP status code
+        $http_code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+        $body = json_decode($response);
+		if($http_code === 200) {
+			return array(
+                'STATUS' => 'SUCCESS',
+                'payment_session_id' => $body->payment_session_id,
+                'environment' => $config_data['environment']
+            );
+		} else {
+			return array(
+                'STATUS' => 'ERROR',
+                'message' => $body->message,
+            );
+		}
+	}
+
+    // Get request for gateway
+	private function curlGetRequest($config_data, $processor_data, $url) {
+        // Headers
+		$headers = [
+			'Accept: application/json',
+			'Content-Type: application/json',
+			'x-api-version: '. self::API_VERSION,
+			'x-client-id:'. $processor_data['app_id'],
+			'x-client-secret:'. $processor_data['secret_key']
+		];
+        // cURL options
+        $curl_options = array(
+            CURLOPT_URL            => $url,
+            CURLOPT_HTTPGET        => true,
+            CURLOPT_HTTPHEADER     => $headers,
+            CURLOPT_TIMEOUT        => 45,
+            CURLOPT_RETURNTRANSFER => true,
+        );
+
+
+		// Initialize cURL session
+        $curl = curl_init();
+
+        // Set cURL options
+        curl_setopt_array($curl, $curl_options);
+
+        // Execute cURL session and get the response
+        $response = curl_exec($curl);
+
+        // Get HTTP status code
+        $http_code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+        
+		if($http_code === 200) {
+            $body = json_decode($response);
+            return array(
+                'STATUS' => 'SUCCESS',
+                'cfOrder' => $body
+            );
+		} else {
+			return array(
+                'STATUS' => 'ERROR',
+            );
+		}
+		
+	}
     
     /**
      * Generate Cashfree payment checkout
@@ -36,33 +173,27 @@ class CashfreePayment
      * @param  mixed $cf_request
      * @return void
      */
-    public function generateHtmlForm($actionUrl, $cf_request)
+    public function generateHtmlForm($payment_data)
     {
         $html = '
-            <!DOCTYPE html>
-            <body>
-                <form action="' . $actionUrl . '" method="post" name="embedded_checkout_form" id="embedded_checkout_form">
-                    <input type="hidden" name="appId" value="' . $cf_request['appId'] . '">
-                    <input type="hidden" name="orderId" value="' . $cf_request['orderId'] . '">
-                    <input type="hidden" name="orderAmount" value="' . $cf_request['orderAmount'] . '">
-                    <input type="hidden" name="orderCurrency" value="' . $cf_request['orderCurrency'] . '">
-
-                    <input type="hidden" name="orderNote" value="' . $cf_request['orderNote'] . '">
-                    <input type="hidden" name="customerName" value="' . $cf_request['customerName'] . '">
-                    <input type="hidden" name="customerEmail" value="' . $cf_request['customerEmail'] . '">
-
-                    <input type="hidden" name="customerPhone" value="' . $cf_request['customerPhone'] . '">
-
-                    <input type="hidden" name="returnUrl" value="' . $cf_request['returnUrl'] . '">
-                    <input type="hidden" name="notifyUrl" value="' . $cf_request['notifyUrl'] . '">
-                    <input type="hidden" name="signature" value="' . $cf_request['signature'] . '">
-
-                    <input type="hidden" name="source" value="' . $cf_request['source'] . '">
-                </form>
-                <script type="text/javascript">
-                    document.getElementById("embedded_checkout_form").submit();
-                </script>
+        <!DOCTYPE html>
+            <html lang="en">
+                <head>
+                    <script src="'.self::CASHFREE_V3_JS_URL.'"></script>
+                </head>
+                <body>
                 </body>
+                <script>
+                    const cashfree = Cashfree({
+                        mode: "'.$payment_data["environment"].'",
+                    });
+                    document.addEventListener("DOMContentLoaded", () => {
+                        cashfree.checkout({
+                        paymentSessionId: "'.$payment_data['payment_session_id'].'",
+                        platformName: "cs"
+                        });
+                    });
+                </script>
             </html>
             ';
 
@@ -76,121 +207,80 @@ class CashfreePayment
      */
     public function postProcessing()
     {
-        $cfSignature = null;
-        if (isset($_POST['signature']) === true) {
-            $cfSignature = $_POST['signature'];
-        }
+        $order_id = $_REQUEST['order_id'];
+        $order_info = fn_get_order_info($order_id);
 
-        $merchantOrderId = $_POST['orderId'];
-        $referenceId = $_POST['referenceId'];
-        if ((empty($cfSignature) === false) and $_POST['txStatus'] == 'SUCCESS') {
-            if (fn_check_payment_script('cashfree.php', $merchantOrderId, $processorData)) {
-                $orderInfo = fn_get_order_info($merchantOrderId);
+        $processor_data = $order_info['payment_method']['processor_params'];
+        $config_data = $this->getCurlValue($processor_data);
+        $url = $config_data['curlUrl']."/".$order_id. '/payments';
+        $get_order_response = $this->curlGetRequest($config_data, $processor_data, $url);
+        if($get_order_response['STATUS'] == 'SUCCESS') {
+            $cf_payments = $get_order_response['cfOrder'][0];
+            if (($cf_payments->payment_status == 'SUCCESS') && (fn_check_payment_script('cashfree.php', $order_id, $processor_data))){
+                if (round($cf_payments->order_amount, 2) == round(fn_cf_adjust_amount($order_info['total'], $processor_data['processor_params']['currency']), 2)) {
+                    $pp_response['order_status'] = 'P';
+                    $pp_response['reason_text'] = $cf_payments->payment_message;
+                    $pp_response['transaction_id'] = $cf_payments->cf_payment_id;
+                    $pp_response['client_id'] = $order_id;
 
-                $success = $this->validateSignature($processorData, $_POST);
-            } else {
-                $error = 'Cashfree_Error: Invalid Response';
+                    fn_finish_payment($order_id, $pp_response);
 
-                $success = false;
+                    fn_order_placement_routines('route', $order_id);
+                } else {
+                    $message = 'An error occured. Description : Amount Mismatch';
+                    $this->handleFailedPayment($message, $cf_payments->cf_payment_id, $order_id);
+                }
             }
-
-            if ($success === true) {
-                $pp_response['order_status'] = 'P';
-                $pp_response['reason_text'] = $_POST['txMsg'];
-                $pp_response['transaction_id'] = $merchantOrderId;
-                $pp_response['client_id'] = $referenceId;
-
-                fn_finish_payment($merchantOrderId, $pp_response);
-
-                fn_order_placement_routines('route', $merchantOrderId);
+            elseif ($cf_payments->payment_status == "FAILED") {
+                $message = 'An error occured. Description : Transaction has failed';
+                $this->handleFailedPayment($message, $cf_payments->cf_payment_id, $order_id);
             } else {
-                $error = $_POST['txMsg'];
-                $this->handleFailedPayment($error, $referenceId, $merchantOrderId);
+                $message = 'An error occured. Description : Transaction status is '. $cf_payments->payment_status;
+                $this->handleIncompletePayment($message, "", $order_id);
             }
-        } else if ($_POST['txStatus'] == 'FAILED') {
-            $error = $_POST['txMsg'];
-            $message = 'An error occured. Description : ' . $error;
-
-            $this->handleFailedPayment($message, $referenceId, $merchantOrderId);
         } else {
-            $error = $_POST['txMsg'];
-            $message = 'An error occured. Description : ' . $error;
-
-            $this->handleIncompletePayment($message, $referenceId, $merchantOrderId);
+            $message = 'An error occured. Description : order is invalid';
+            $this->handleIncompletePayment($message, "", $order_id);
         }
     }
     
     /**
      * Handle Failed Payment
      *
-     * @param  mixed $errorMessage
-     * @param  mixed $referenceId
-     * @param  mixed $merchantOrderId
+     * @param  mixed $error_message
+     * @param  mixed $reference_id
+     * @param  mixed $merchant_order_id
      * @return void
      */
-    protected function handleFailedPayment($errorMessage, $referenceId, $merchantOrderId)
+    protected function handleFailedPayment($error_message, $reference_id, $merchant_order_id)
     {
         $pp_response['order_status'] = 'F';
-        $pp_response['reason_text'] = $errorMessage;
-        $pp_response['transaction_id'] = $referenceId;
-        $pp_response['client_id'] = $merchantOrderId;
+        $pp_response['reason_text'] = $error_message;
+        $pp_response['transaction_id'] = $reference_id;
+        $pp_response['client_id'] = $merchant_order_id;
 
-        fn_finish_payment($merchantOrderId, $pp_response);
-        fn_set_notification('E', __('error'), __('text_cf_failed_order') . $merchantOrderId);
+        fn_finish_payment($merchant_order_id, $pp_response);
+        fn_set_notification('E', __('error'), __('text_cf_failed_order') . $merchant_order_id);
         fn_order_placement_routines('checkout_redirect');
     }
     
     /**
      * Handle Incomplete Payment
      *
-     * @param  mixed $errorMessage
-     * @param  mixed $referenceId
-     * @param  mixed $merchantOrderId
+     * @param  mixed $error_message
+     * @param  mixed $reference_id
+     * @param  mixed $merchant_order_id
      * @return void
      */
-    protected function handleIncompletePayment($errorMessage, $referenceId, $merchantOrderId)
+    protected function handleIncompletePayment($error_message, $reference_id, $merchant_order_id)
     {
         $pp_response['order_status'] = 'N';
-        $pp_response['reason_text'] = $errorMessage;
-        $pp_response['transaction_id'] = $referenceId;
-        $pp_response['client_id'] = $merchantOrderId;
+        $pp_response['reason_text'] = $error_message;
+        $pp_response['transaction_id'] = $reference_id;
+        $pp_response['client_id'] = $merchant_order_id;
 
-        fn_finish_payment($merchantOrderId, $pp_response);
-        fn_set_notification('E', __('error'), __('text_cf_incomplete_order') . $merchantOrderId);
+        fn_finish_payment($merchant_order_id, $pp_response);
+        fn_set_notification('E', __('error'), __('text_cf_incomplete_order') . $merchant_order_id);
         fn_order_placement_routines('checkout_redirect');
-    }
-    
-    /**
-     * Validate Signature after payment
-     *
-     * @param  mixed $processorData
-     * @param  mixed $returnParams
-     * @return void
-     */
-    public function validateSignature($processorData, $returnParams)
-    {
-        $orderId = $returnParams["orderId"];
-        $orderAmount = $returnParams["orderAmount"];
-        $paymentMode = $returnParams["paymentMode"];
-        $referenceId = $returnParams["referenceId"];
-        $txStatus = $returnParams["txStatus"];
-        $txTime = $returnParams["txTime"];
-        $txMsg = $returnParams["txMsg"];
-        $signature = $returnParams["signature"];
-
-        $secretKey = $processorData['processor_params']['secret_key'];
-
-        $data = $orderId . $orderAmount . $referenceId . $txStatus . $paymentMode . $txMsg . $txTime;
-        $hash_hmac = hash_hmac('sha256', $data, $secretKey, true);
-        $computedSignature = base64_encode($hash_hmac);
-
-        if ($computedSignature != $signature) {
-            $success = false;
-        }
-
-        $success = true;
-
-        return $success;
-
     }
 }
