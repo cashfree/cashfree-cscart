@@ -3,7 +3,7 @@
 class CashfreePayment
 {
     //Define version of plugin
-    const VERSION = '1.0.0';
+    const VERSION = '2.0.0';
     const API_VERSION = '2022-09-01';
     const CASHFREE_V3_JS_URL = 'https://sdk.cashfree.com/js/v3/cashfree.js';
     /**
@@ -13,7 +13,7 @@ class CashfreePayment
      * @param  mixed $cf_request
      * @return void
      */
-    public function getPaymentSessionData($processor_data, $cf_request)
+    public function getPaymentSessionData($processor_data, $cf_request, $order_info)
     {
         $config_data = $this->getCurlValue($processor_data);
         $url = $config_data['curlUrl']."/".$cf_request['order_id'];
@@ -43,7 +43,7 @@ class CashfreePayment
                 }
             }
         }
-        return $this->curlPostRequest($config_data, $processor_data, $cf_request);
+        return $this->curlPostRequest($config_data, $processor_data, $cf_request, $order_info);
     }
 
     // Get config values for gateway environment
@@ -58,8 +58,26 @@ class CashfreePayment
 	}
 
     // Post request for gateway
-	private function curlPostRequest($config_data, $processor_data, $data) {
+	private function curlPostRequest($config_data, $processor_data, $data, $order_info) {
+
+        $cart_items = [];
+        // Iterate over each product in the order
+        foreach ($order_info['products'] as $product) {
+            $cart_items[] = [
+                'item_id' => (string) $product['product_id'],
+                'item_name' => (string) $product['product'],
+                'item_details_url' => $product['product_url'],
+                'item_original_unit_price' => $product['base_price'],
+                'item_quantity' => (int) $product['amount']
+            ];
+        }
+
+        $shipping_cost_float = fn_cf_adjust_amount($order_info['shipping_cost'], $processor_params['currency']);
         $request_data = array(
+            'cart_details' => array(
+                'shipping_charge' => $shipping_cost_formatted,
+                'cart_items' => $cart_items
+            ),
             'customer_details' => array(
                 'customer_id' =>  $data['customer_id'],
                 'customer_email' =>  $data['customer_email'],
@@ -75,6 +93,7 @@ class CashfreePayment
             'order_currency' => $data['order_currency'],
             'order_note' => $data['order_note'],
         );
+
         // Headers
 		$headers = [
 			'Accept: application/json',
@@ -175,29 +194,64 @@ class CashfreePayment
      */
     public function generateHtmlForm($payment_data)
     {
-        $html = '
-        <!DOCTYPE html>
-            <html lang="en">
+        $cashfreeJsUrl = self::CASHFREE_V3_JS_URL; 
+        if ($payment_data['in_context']) {
+            $html = <<<EOT
+                <!DOCTYPE html>
                 <head>
-                    <script src="'.self::CASHFREE_V3_JS_URL.'"></script>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Cashfree Checkout Integration</title>
+                    <script src="{$cashfreeJsUrl}"></script>
                 </head>
                 <body>
-                </body>
-                <script>
-                    const cashfree = Cashfree({
-                        mode: "'.$payment_data["environment"].'",
-                    });
-                    document.addEventListener("DOMContentLoaded", () => {
-                        cashfree.checkout({
-                        paymentSessionId: "'.$payment_data['payment_session_id'].'",
-                        platformName: "cs"
+                    <form name="cashfree-form" id="cashfree-form" action="{$payment_data['url']}" target="_parent" method="POST">
+                    </form>
+                    <script type="text/javascript">
+                        const cashfree = Cashfree({
+                            mode: "{$payment_data['environment']}"
+                        })
+                        document.addEventListener("DOMContentLoaded", function() {
+                            let checkoutOptions = {
+                                paymentSessionId: "{$payment_data['payment_session_id']}",
+                                platformName: "cs",
+                                redirectTarget: "_modal",
+                            };
+                            cashfree.checkout(checkoutOptions).then((result) => {
+                                document.getElementById("cashfree-form").submit();
+                            });
                         });
-                    });
-                </script>
-            </html>
-            ';
+                    </script>
+                    </body>
+                </html>
+                EOT;
 
-        return $html;
+            return $html;
+        } else {
+            $html = <<<EOT
+                <!DOCTYPE html>
+                <html lang="en">
+                    <head>
+                        <script src="{$cashfreeJsUrl}"></script>
+                    </head>
+                    <body>
+                    </body>
+                    <script>
+                        const cashfree = Cashfree({
+                            mode: "{$payment_data["environment"]}",
+                        });
+                        document.addEventListener("DOMContentLoaded", () => {
+                            cashfree.checkout({
+                            paymentSessionId: "{$payment_data['payment_session_id']}",
+                            platformName: "cs"
+                            });
+                        });
+                    </script>
+                </html>
+                EOT;;
+
+            return $html;
+        }
     }
     
     /**
@@ -207,12 +261,16 @@ class CashfreePayment
      */
     public function postProcessing()
     {
-        $order_id = $_REQUEST['order_id'];
+        $cashfree_order_id = $_REQUEST['order_id'];
+        if (preg_match('/cf_(\d+)/', $cashfree_order_id, $matches)) {
+            $order_id = $matches[1];
+        } else {
+            $order_id = $cashfree_order_id;
+        }
         $order_info = fn_get_order_info($order_id);
-
         $processor_data = $order_info['payment_method']['processor_params'];
         $config_data = $this->getCurlValue($processor_data);
-        $url = $config_data['curlUrl']."/".$order_id. '/payments';
+        $url = $config_data['curlUrl']."/".$cashfree_order_id. '/payments';
         $get_order_response = $this->curlGetRequest($config_data, $processor_data, $url);
         if($get_order_response['STATUS'] == 'SUCCESS') {
             $cf_payments = $get_order_response['cfOrder'][0];
