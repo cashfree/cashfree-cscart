@@ -23,6 +23,22 @@
 </div>
 
 <div class="form-field">
+    <label for="order_id_prefix_text">{__("cf_order_id_prefix_text")}:</label>
+    <select name="payment_data[processor_params][order_id_prefix_text]" id="order_id_prefix_text">
+        <option value="0" {if $processor_params.order_id_prefix_text == "0"}selected="selected"{/if}>{__("no")}</option>
+        <option value="1" {if $processor_params.order_id_prefix_text == "1"}selected="selected"{/if}>{__("yes")}</option>
+     </select>
+</div>
+
+<div class="form-field">
+    <label for="order_in_context">{__("cf_order_in_context")}:</label>
+    <select name="payment_data[processor_params][order_in_context]" id="order_in_context">
+        <option value="0" {if $processor_params.order_in_context == "0"}selected="selected"{/if}>{__("no")}</option>
+        <option value="1" {if $processor_params.order_in_context == "1"}selected="selected"{/if}>{__("yes")}</option>
+     </select>
+</div>
+
+<div class="form-field">
     <label for="enabled_test_mode">{__("cf_enabled_test_mode")}:</label>
     <select name="payment_data[processor_params][enabled_test_mode]" id="enabled_test_mode">
         <option value="0" {if $processor_params.enabled_test_mode == "0"}selected="selected"{/if}>{__("no")}</option>
